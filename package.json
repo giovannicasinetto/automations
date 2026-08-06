@@ -1,0 +1,21 @@
+{
+  "name": "casinetto-competitor-pricing",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Scrape UAE grocery competitors and track Casinetto price competitiveness (1IF coverage + Price Index) over time in Supabase.",
+  "type": "commonjs",
+  "scripts": {
+    "import": "node src/pipeline/import-catalog.js",
+    "scrape": "node src/pipeline/scrape.js",
+    "match": "node src/pipeline/match.js",
+    "metrics": "node src/pipeline/metrics.js",
+    "all": "node src/pipeline/run-all.js",
+    "try:dolcesalato": "node scripts/try-dolcesalato.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "dotenv": "^16.4.5",
+    "playwright": "^1.47.0",
+    "xlsx": "^0.18.5"
+  }
+}
