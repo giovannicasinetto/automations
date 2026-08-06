@@ -250,41 +250,74 @@ function ItemTable({ c, hideReview }) {
   );
 }
 
+function RecCard({ tag, title, sub, color }) {
+  return (
+    <div style={{ flex: '1 1 210px', background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 16px', boxShadow: 'var(--shadow)' }}>
+      <div style={{ fontSize: 10.5, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--faint)', fontWeight: 600 }}>{tag}</div>
+      <div style={{ fontFamily: 'var(--serif)', fontSize: 19, fontWeight: 600, margin: '5px 0 3px', color: color || 'var(--ink)', lineHeight: 1.15 }}>{title}</div>
+      <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.4 }}>{sub}</div>
+    </div>
+  );
+}
+
 function GapsView({ gaps }) {
-  if (!gaps || !gaps.brands) {
+  if (!gaps || !gaps.recommendations) {
     return <div className="panel"><div className="empty"><h3>No gap data yet</h3><p>Run a competitor scrape first.</p></div></div>;
   }
-  const { total_gap_skus, brands, categories, per_competitor, sample_products } = gaps;
-  const strong = brands.filter(b => b.competitors >= 2).length;
+  const { total_gap_skus, recommendations, headlines, categories, per_competitor, sample_products } = gaps;
+  const strong = recommendations.filter(b => b.competitors >= 2).length;
+  const h = headlines || {};
 
   return (
     <>
       <section className="kpis">
-        <Kpi val={brands.length} label="Brands you could add" color="var(--accent)" />
+        <Kpi val={recommendations.length} label="Brands you could add" color="var(--accent)" />
         <Kpi val={strong} label="Backed by 2+ rivals" color="var(--good)" />
         <Kpi val={categories.length} label="Gap categories" />
         <Kpi val={total_gap_skus.toLocaleString()} label="Products they carry, you don't" />
         <Kpi val={per_competitor.length} label="Competitors analysed" />
       </section>
 
+      <section className="panel" style={{ padding: '16px 20px' }}>
+        <div className="phead" style={{ padding: 0, marginBottom: 12 }}>
+          <h2>Where to start</h2><span className="hint">Recommended moves, each with the reason behind it.</span>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+          {h.top_pick && <RecCard tag="Top pick" color="var(--accent)" title={h.top_pick.brand}
+            sub={h.top_pick.why} />}
+          {h.biggest_brand && <RecCard tag="Biggest brand gap" title={h.biggest_brand.brand}
+            sub={`Carried by ${h.biggest_brand.competitors} of ${per_competitor.length} rivals · ${h.biggest_brand.skus} SKUs in ${h.biggest_brand.category}`} />}
+          {h.biggest_category && <RecCard tag="Biggest category gap" title={h.biggest_category.category}
+            sub={`${h.biggest_category.skus} products missing across ${h.biggest_category.competitors} rivals`} />}
+          {h.best_crosssell && <RecCard tag="Best for cross-sell" title={h.best_crosssell.brand}
+            sub={`Extends ${h.best_crosssell.category} — a range you already sell, so it deepens the basket`} />}
+          {h.best_repeat && <RecCard tag="Best for repeat customers" color="var(--good)" title={h.best_repeat.brand}
+            sub={`${h.best_repeat.category} — a replenishable staple that pulls customers back`} />}
+        </div>
+      </section>
+
       <p className="note" style={{ marginTop: 0, marginBottom: 18 }}>
-        These are products your competitors stock that don&apos;t match anything in your catalogue — i.e. launch
-        candidates. Brands <b>backed by 2+ competitors</b> are the safest bets (validated demand). Based on{' '}
-        {per_competitor.map(p => `${p.name} ${p.scraped}`).join(', ')} products scraped so far — Waitrose &amp; Spinneys
-        full ranges are still being expanded, so treat their counts as indicative for now.
+        <b>How the Selection Score works.</b> Each brand is scored on factors that reinforce each other:
+        proven demand (how many rivals carry it), range depth, category size, how well it extends a range you
+        already sell, and how replenishable it is. Cross-sell and repeat use heuristic proxies for now — they
+        get sharper once your order history is connected. Based on{' '}
+        {per_competitor.map(p => `${p.name} ${p.scraped}`).join(', ')} products scraped; Waitrose &amp; Spinneys
+        full ranges are still being expanded, so treat their counts as indicative.
       </p>
 
       <section className="panel">
-        <div className="phead"><h2>Brands to consider launching</h2><span className="hint">Ranked by how many competitors carry them, then range depth.</span></div>
+        <div className="phead"><h2>Ranked launch candidates</h2><span className="hint">Higher Selection Score = stronger, better-reinforced bet.</span></div>
         <div className="tblwrap"><table><thead><tr>
-          <th>Brand</th><th className="num">Carried by</th><th className="num">Their SKUs</th><th>Mostly in</th>
+          <th>Brand</th><th className="num">Score</th><th className="num">Carried by</th><th className="num">SKUs</th><th>Category</th><th>Why</th>
         </tr></thead><tbody>
-          {brands.slice(0, 40).map(b => (
+          {recommendations.slice(0, 40).map(b => (
             <tr key={b.brand}>
               <td><div className="cname">{b.brand}</div></td>
+              <td className="num"><span className="pcrcell"><span className="bar"><i style={{ width: b.score + '%', background: b.score >= 60 ? 'var(--good)' : b.score >= 40 ? 'var(--watch)' : 'var(--faint)' }} /></span><span className="pcrval">{b.score}</span></span></td>
               <td className="num"><span className={'chip ' + (b.competitors >= 2 ? 'g' : '')} style={b.competitors < 2 ? { background: 'var(--surface-2)', color: 'var(--muted)' } : undefined}>{b.competitors} of {per_competitor.length}</span></td>
               <td className="num">{b.skus}</td>
-              <td>{b.top_category}</td>
+              <td>{b.category}</td>
+              <td className="theirs" style={{ maxWidth: 320 }}>{b.why}</td>
             </tr>
           ))}
         </tbody></table></div>

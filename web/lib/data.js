@@ -87,7 +87,7 @@ export async function getDashboardData() {
     };
   });
 
-  const gaps = computeGaps(compProducts, allMatches, latestPrices, competitorsRes.data);
+  const gaps = computeGaps(compProducts, allMatches, latestPrices, competitorsRes.data, catalog);
 
   return {
     summary: {
@@ -102,12 +102,30 @@ export async function getDashboardData() {
   };
 }
 
-// Assortment gaps = competitor products with NO accepted match to our catalogue.
-// Grouped into a launch shortlist by brand (with cross-competitor demand signal)
-// and by category, plus a sample of specific products.
-function computeGaps(compProducts, allMatches, latestPrices, competitors) {
+// How replenishable / repeat-driving a category is (proxy until real order data
+// is connected). Staples like coffee, pasta, tomato base drive re-purchase.
+const REPEAT_WEIGHT = {
+  'Drinks': 1.0, 'Pantry – Tomato Base': 0.95, 'Pasta & Rice': 0.95, 'Pantry – Pasta Sauce': 0.85,
+  'Dairy, Eggs & Chilled': 0.9, 'Cheese': 0.85, 'Flour': 0.85, 'Bakery': 0.8,
+  'Pantry': 0.75, 'Fruit & Vegetables': 0.7, 'Chilled Meat & Fish': 0.7,
+  'Frozen': 0.6, 'Quick Meals': 0.6, 'Uncategorised': 0.5,
+};
+
+// Assortment gaps + a flywheel-style Selection Score. A competitor product is a
+// gap if it has no accepted match to our catalogue. We score each gap brand on
+// factors that reinforce each other (Amazon-flywheel logic): proven demand →
+// range depth → category completeness → fits what we already sell → drives
+// repeat. Cross-sell and repeat use heuristic proxies (category adjacency and
+// replenishability) until real order data is connected.
+function computeGaps(compProducts, allMatches, latestPrices, competitors, catalog) {
   const nameOf = Object.fromEntries((competitors || []).map(c => [c.slug, c.name]));
   const priceOf = new Map(latestPrices.map(p => [p.competitor_product_id, p.price]));
+  const nComp = (competitors || []).length || 3;
+
+  // where WE already have depth (for the cross-sell / range-extension proxy)
+  const ourByCat = {};
+  for (const it of catalog) { const c = it.category || 'Uncategorised'; ourByCat[c] = (ourByCat[c] || 0) + 1; }
+  const maxOurCat = Math.max(1, ...Object.values(ourByCat));
 
   const matched = new Set();
   for (const m of allMatches) {
@@ -131,18 +149,6 @@ function computeGaps(compProducts, allMatches, latestPrices, competitors) {
     });
   }
 
-  // brand shortlist (exclude unbranded), ranked by #competitors then #SKUs
-  const brandMap = {};
-  for (const g of gapProducts) {
-    if (g.brand === 'Unbranded / other') continue;
-    const b = brandMap[g.brand] || (brandMap[g.brand] = { skus: 0, comps: new Set(), cats: {} });
-    b.skus++; b.comps.add(g.competitor); b.cats[g.category] = (b.cats[g.category] || 0) + 1;
-  }
-  const brands = Object.entries(brandMap).map(([brand, v]) => ({
-    brand, competitors: v.comps.size, skus: v.skus,
-    top_category: Object.entries(v.cats).sort((a, b) => b[1] - a[1])[0]?.[0] || '—',
-  })).sort((a, b) => b.competitors - a.competitors || b.skus - a.skus);
-
   // category breakdown
   const catMap = {};
   for (const g of gapProducts) {
@@ -152,13 +158,62 @@ function computeGaps(compProducts, allMatches, latestPrices, competitors) {
   const categories = Object.entries(catMap).map(([category, v]) => ({
     category, skus: v.skus, competitors: v.comps.size,
   })).sort((a, b) => b.skus - a.skus);
+  const maxCatGap = Math.max(1, ...categories.map(c => c.skus));
+
+  // per-brand aggregation + flywheel Selection Score
+  const brandMap = {};
+  for (const g of gapProducts) {
+    if (g.brand === 'Unbranded / other') continue;
+    const b = brandMap[g.brand] || (brandMap[g.brand] = { skus: 0, comps: new Set(), cats: {} });
+    b.skus++; b.comps.add(g.competitor); b.cats[g.category] = (b.cats[g.category] || 0) + 1;
+  }
+
+  const recommendations = Object.entries(brandMap).map(([brand, v]) => {
+    const primary = Object.entries(v.cats).sort((a, b) => b[1] - a[1])[0]?.[0] || 'Uncategorised';
+    const demand = v.comps.size / nComp;                       // proven demand
+    const depth = Math.min(1, v.skus / 20);                    // range depth
+    const pull = (catMap[primary]?.skus || 0) / maxCatGap;     // category size / traffic
+    const adjacency = (ourByCat[primary] || 0) / maxOurCat;    // extends a range we already sell
+    const repeat = REPEAT_WEIGHT[primary] ?? 0.5;              // replenishability proxy
+    const score = Math.round(100 * (0.30 * demand + 0.15 * depth + 0.15 * pull + 0.20 * adjacency + 0.20 * repeat));
+
+    // plain-English "why", strongest factors first
+    const why = [];
+    if (v.comps.size >= 3) why.push('stocked by all 3 rivals');
+    else if (v.comps.size === 2) why.push('stocked by 2 of 3 rivals');
+    else why.push('stocked by 1 rival');
+    if (v.skus >= 10) why.push(`deep range (${v.skus} SKUs)`);
+    if (repeat >= 0.85) why.push('replenishable staple (repeat driver)');
+    if (adjacency >= 0.5) why.push(`extends ${primary}, where you already sell`);
+    else if (adjacency > 0 && adjacency < 0.15) why.push(`opens up ${primary}, thin for you today`);
+
+    return {
+      brand, score, competitors: v.comps.size, skus: v.skus, category: primary,
+      repeat: Math.round(repeat * 100), adjacency: Math.round(adjacency * 100),
+      why: why.slice(0, 3).join(' · '),
+    };
+  }).sort((a, b) => b.score - a.score);
+
+  // headline recommendation cards
+  const multi = recommendations.filter(r => r.competitors >= 2);
+  const pool = multi.length ? multi : recommendations;
+  const byDepth = [...recommendations].sort((a, b) => b.competitors - a.competitors || b.skus - a.skus);
+  const byCrossSell = [...pool].sort((a, b) => b.adjacency - a.adjacency || b.score - a.score);
+  const byRepeat = [...pool].sort((a, b) => b.repeat - a.repeat || b.competitors - a.competitors);
+  const headlines = {
+    top_pick: recommendations[0] || null,
+    biggest_brand: byDepth[0] || null,
+    biggest_category: categories[0] || null,
+    best_crosssell: byCrossSell[0] || null,
+    best_repeat: byRepeat[0] || null,
+  };
 
   return {
     per_competitor: Object.entries(perComp).map(([slug, v]) => ({ slug, name: nameOf[slug] || slug, ...v })),
     total_gap_skus: gapProducts.length,
-    brands,
+    recommendations,
+    headlines,
     categories,
-    // sample of branded gap products for drill-down (keep payload sane)
     sample_products: gapProducts.filter(g => g.brand !== 'Unbranded / other').slice(0, 300),
   };
 }
