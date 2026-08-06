@@ -3,6 +3,7 @@
 // shape the client Dashboard expects.
 
 import { createClient } from '@supabase/supabase-js';
+import { deriveBrand, deriveCategory } from './taxonomy';
 
 const ACCEPT = 0.62; // must match src/lib/match.js AUTO_ACCEPT
 
@@ -30,12 +31,15 @@ const r1 = n => n == null ? null : Math.round(n * 10) / 10;
 
 export async function getDashboardData() {
   const sb = client();
-  const [competitorsRes, summaryRes, metrics, items, catalog] = await Promise.all([
+  const [competitorsRes, summaryRes, metrics, items, catalog, compProducts, allMatches, latestPrices] = await Promise.all([
     sb.from('competitors').select('slug,name'),
     sb.from('v_catalog_summary').select('*').single(),
     fetchAll(sb, 'website_metrics', 'competitor,items_found,coverage_pct,price_index,price_index_wtd,win_rate_pct,median_gap_pct,computed_at'),
     fetchAll(sb, 'v_item_competitiveness', 'competitor,item_code,item_name,our_price,their_price,pcr,gap_pct,we_are_cheaper,confidence,match_method,competitor_title,competitor_url'),
     fetchAll(sb, 'catalog_items', 'item_code,brand,category', q => q.eq('is_active', true)),
+    fetchAll(sb, 'competitor_products', 'id,competitor,title,url'),
+    fetchAll(sb, 'product_matches', 'competitor_product_id,confidence,match_method,is_confirmed,is_rejected'),
+    fetchAll(sb, 'v_latest_price', 'competitor_product_id,price'),
   ]);
 
   const brandOf = new Map(catalog.map(c => [c.item_code, c.brand || 'Unbranded / other']));
@@ -83,6 +87,8 @@ export async function getDashboardData() {
     };
   });
 
+  const gaps = computeGaps(compProducts, allMatches, latestPrices, competitorsRes.data);
+
   return {
     summary: {
       total_items: summaryRes.data?.total_items ?? catalog.length,
@@ -91,6 +97,68 @@ export async function getDashboardData() {
       total_categories: summaryRes.data?.total_categories ?? null,
     },
     competitors,
+    gaps,
     generated_at: new Date().toISOString(),
+  };
+}
+
+// Assortment gaps = competitor products with NO accepted match to our catalogue.
+// Grouped into a launch shortlist by brand (with cross-competitor demand signal)
+// and by category, plus a sample of specific products.
+function computeGaps(compProducts, allMatches, latestPrices, competitors) {
+  const nameOf = Object.fromEntries((competitors || []).map(c => [c.slug, c.name]));
+  const priceOf = new Map(latestPrices.map(p => [p.competitor_product_id, p.price]));
+
+  const matched = new Set();
+  for (const m of allMatches) {
+    if (m.is_rejected) continue;
+    if (m.is_confirmed || m.match_method === 'manual' || m.match_method === 'barcode' || m.confidence >= ACCEPT)
+      matched.add(m.competitor_product_id);
+  }
+
+  const perComp = {};
+  for (const cp of compProducts) (perComp[cp.competitor] = perComp[cp.competitor] || { scraped: 0, gap: 0 }).scraped++;
+
+  const gapProducts = [];
+  for (const cp of compProducts) {
+    if (matched.has(cp.id)) continue;
+    perComp[cp.competitor].gap++;
+    gapProducts.push({
+      competitor: cp.competitor, competitor_name: nameOf[cp.competitor] || cp.competitor,
+      title: cp.title, url: cp.url, price: priceOf.get(cp.id) ?? null,
+      brand: deriveBrand(cp.title) || 'Unbranded / other',
+      category: deriveCategory(cp.title) || 'Uncategorised',
+    });
+  }
+
+  // brand shortlist (exclude unbranded), ranked by #competitors then #SKUs
+  const brandMap = {};
+  for (const g of gapProducts) {
+    if (g.brand === 'Unbranded / other') continue;
+    const b = brandMap[g.brand] || (brandMap[g.brand] = { skus: 0, comps: new Set(), cats: {} });
+    b.skus++; b.comps.add(g.competitor); b.cats[g.category] = (b.cats[g.category] || 0) + 1;
+  }
+  const brands = Object.entries(brandMap).map(([brand, v]) => ({
+    brand, competitors: v.comps.size, skus: v.skus,
+    top_category: Object.entries(v.cats).sort((a, b) => b[1] - a[1])[0]?.[0] || '—',
+  })).sort((a, b) => b.competitors - a.competitors || b.skus - a.skus);
+
+  // category breakdown
+  const catMap = {};
+  for (const g of gapProducts) {
+    const c = catMap[g.category] || (catMap[g.category] = { skus: 0, comps: new Set() });
+    c.skus++; c.comps.add(g.competitor);
+  }
+  const categories = Object.entries(catMap).map(([category, v]) => ({
+    category, skus: v.skus, competitors: v.comps.size,
+  })).sort((a, b) => b.skus - a.skus);
+
+  return {
+    per_competitor: Object.entries(perComp).map(([slug, v]) => ({ slug, name: nameOf[slug] || slug, ...v })),
+    total_gap_skus: gapProducts.length,
+    brands,
+    categories,
+    // sample of branded gap products for drill-down (keep payload sane)
+    sample_products: gapProducts.filter(g => g.brand !== 'Unbranded / other').slice(0, 300),
   };
 }

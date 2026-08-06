@@ -78,15 +78,18 @@ export default function Dashboard({ data }) {
         <div className="ctl">
           <span className="stamp"><span className="dot" /> Updated {stamp}</span>
           <span className="selwrap">
-            <select value={selected} onChange={e => setSelected(e.target.value)} aria-label="Select competitor">
+            <select value={selected} onChange={e => setSelected(e.target.value)} aria-label="Select view">
               <option value="__all__">All competitors (roll-up)</option>
               {competitors.map(c => <option key={c.slug} value={c.slug}>{c.name}{c.status !== 'live' ? ` — ${c.status}` : ''}</option>)}
+              <option value="__gaps__">🔍 What to launch (assortment gaps)</option>
             </select>
           </span>
         </div>
       </header>
 
-      {selected === '__all__'
+      {selected === '__gaps__'
+        ? <GapsView gaps={data.gaps} />
+        : selected === '__all__'
         ? <AllView summary={summary} competitors={competitors} live={live} onPick={setSelected} />
         : <OneView c={cur} view={view} setView={setView} hideReview={hideReview} setHideReview={setHideReview} />}
 
@@ -244,6 +247,81 @@ function ItemTable({ c, hideReview }) {
         );
       })}
     </tbody></table>
+  );
+}
+
+function GapsView({ gaps }) {
+  if (!gaps || !gaps.brands) {
+    return <div className="panel"><div className="empty"><h3>No gap data yet</h3><p>Run a competitor scrape first.</p></div></div>;
+  }
+  const { total_gap_skus, brands, categories, per_competitor, sample_products } = gaps;
+  const strong = brands.filter(b => b.competitors >= 2).length;
+
+  return (
+    <>
+      <section className="kpis">
+        <Kpi val={brands.length} label="Brands you could add" color="var(--accent)" />
+        <Kpi val={strong} label="Backed by 2+ rivals" color="var(--good)" />
+        <Kpi val={categories.length} label="Gap categories" />
+        <Kpi val={total_gap_skus.toLocaleString()} label="Products they carry, you don't" />
+        <Kpi val={per_competitor.length} label="Competitors analysed" />
+      </section>
+
+      <p className="note" style={{ marginTop: 0, marginBottom: 18 }}>
+        These are products your competitors stock that don&apos;t match anything in your catalogue — i.e. launch
+        candidates. Brands <b>backed by 2+ competitors</b> are the safest bets (validated demand). Based on{' '}
+        {per_competitor.map(p => `${p.name} ${p.scraped}`).join(', ')} products scraped so far — Waitrose &amp; Spinneys
+        full ranges are still being expanded, so treat their counts as indicative for now.
+      </p>
+
+      <section className="panel">
+        <div className="phead"><h2>Brands to consider launching</h2><span className="hint">Ranked by how many competitors carry them, then range depth.</span></div>
+        <div className="tblwrap"><table><thead><tr>
+          <th>Brand</th><th className="num">Carried by</th><th className="num">Their SKUs</th><th>Mostly in</th>
+        </tr></thead><tbody>
+          {brands.slice(0, 40).map(b => (
+            <tr key={b.brand}>
+              <td><div className="cname">{b.brand}</div></td>
+              <td className="num"><span className={'chip ' + (b.competitors >= 2 ? 'g' : '')} style={b.competitors < 2 ? { background: 'var(--surface-2)', color: 'var(--muted)' } : undefined}>{b.competitors} of {per_competitor.length}</span></td>
+              <td className="num">{b.skus}</td>
+              <td>{b.top_category}</td>
+            </tr>
+          ))}
+        </tbody></table></div>
+      </section>
+
+      <section className="panel">
+        <div className="phead"><h2>Gap by category</h2><span className="hint">Where the biggest range gaps sit.</span></div>
+        <div className="tblwrap"><table><thead><tr>
+          <th>Category</th><th className="num">Products missing</th><th className="num">Across competitors</th>
+        </tr></thead><tbody>
+          {categories.map(c => (
+            <tr key={c.category}>
+              <td><div className="cname">{c.category}</div></td>
+              <td className="num">{c.skus}</td>
+              <td className="num">{c.competitors}</td>
+            </tr>
+          ))}
+        </tbody></table></div>
+      </section>
+
+      <section className="panel">
+        <div className="phead"><h2>Example products</h2><span className="hint">Specific branded items competitors carry that you don&apos;t.</span></div>
+        <div className="tblwrap"><table><thead><tr>
+          <th>Product</th><th>Brand</th><th>Category</th><th>Seen at</th><th className="num">Their price</th>
+        </tr></thead><tbody>
+          {sample_products.slice(0, 60).map((p, i) => (
+            <tr key={i}>
+              <td>{p.url ? <a href={p.url} target="_blank" rel="noopener noreferrer">{p.title}</a> : p.title}</td>
+              <td>{p.brand}</td>
+              <td className="theirs">{p.category}</td>
+              <td className="theirs">{p.competitor_name}</td>
+              <td className="num">{fmt(p.price)}</td>
+            </tr>
+          ))}
+        </tbody></table></div>
+      </section>
+    </>
   );
 }
 
